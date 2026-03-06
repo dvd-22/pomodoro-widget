@@ -1,0 +1,20 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "",
+                "Name": "David A"
+            }
+        ],
+        "Category": "Utilities",
+        "Description": "A Pomodoro timer for the taskbar with session scheduling, custom presets, and task tracking",
+        "Icon": "clock",
+        "Id": "com.pomodoro.timer",
+        "License": "GPL-2.0-only",
+        "Name": "Pomodoro Timer",
+        "Version": "2.1",
+        "Website": ""
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationAreaCategory": "ApplicationStatus"
+}
