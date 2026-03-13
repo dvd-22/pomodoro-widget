@@ -116,15 +116,13 @@ PlasmoidItem {
     }
 
     // Build alternating work/break blocks from a total duration.
-    // For sessions >= 2h, every 4th break is a long break.
+    // Every 4th break is a long break.
     // If remaining time can't fit a full break, fold it into the last work block.
     function buildAlternatingByTotal(workMin, breakMin, totalMin, longBreakMin) {
         var workSec = Math.max(1, workMin) * 60
         var shortBreakSec = Math.max(1, breakMin) * 60
         var longBreakSec = Math.max(1, longBreakMin) * 60
         var remaining = Math.max(1, totalMin) * 60
-        var sessionMin = Math.max(1, totalMin)
-        var useLongBreaks = sessionMin >= 120
         var workBlocksDone = 0
         var arr = []
         var adjustedTail = false
@@ -138,7 +136,7 @@ PlasmoidItem {
                 break
 
             var thisBreakSec = shortBreakSec
-            if (useLongBreaks && (workBlocksDone % 4 === 0))
+            if (workBlocksDone % 4 === 0)
                 thisBreakSec = longBreakSec
 
             if (remaining >= thisBreakSec) {
@@ -270,7 +268,7 @@ PlasmoidItem {
         if (fromType === undefined || toType === undefined || fromType === toType)
             return
 
-        var message = blockLabel(fromType) + " finished. " + blockLabel(toType) + " started."
+        var message = toType === "work" ? "Time to work 🍅" : "Break time ☕"
         if (blockTransitionNotification) {
             blockTransitionNotification.title = "Pomodoro Timer"
             blockTransitionNotification.text = message
