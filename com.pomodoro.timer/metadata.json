@@ -8,7 +8,7 @@
         ],
         "Category": "Utilities",
         "Description": "A Pomodoro timer for the taskbar with session scheduling, custom presets, and task tracking",
-        "Icon": "clock",
+        "Icon": "com.pomodoro.timer",
         "Id": "com.pomodoro.timer",
         "License": "GPL-2.0-only",
         "Name": "Pomodoro Timer",

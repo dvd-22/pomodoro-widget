@@ -32,11 +32,13 @@ PlasmoidItem {
     property int  focusMinutes:      60
     property int  longBreakMinutes:  15
     property bool suppressAutoApply: false
+    property string appIconPath: Qt.resolvedUrl("../../logo.png")
 
     Notification {
         id: blockTransitionNotification
         componentName: "plasma_workspace"
         eventId: "notification"
+        iconName: "com.pomodoro.timer"
         title: "Pomodoro Timer"
         text: ""
     }
@@ -186,9 +188,7 @@ PlasmoidItem {
     function startTimer() {
         if (sessions.length === 0) return
         startTime = new Date()
-        var total = 0
-        for (var i = 0; i < sessions.length; i++) total += sessions[i].duration
-        endTime  = new Date(startTime.getTime() + total * 1000)
+        refreshEndTimeFromNow()
         running  = true
         finished = false
     }
@@ -226,20 +226,31 @@ PlasmoidItem {
         onTriggered: {
             if (root.timeLeft > 1) {
                 root.timeLeft--
+                root.refreshEndTimeFromNow()
             } else {
                 if (root.currentIndex + 1 < root.sessions.length) {
                     var oldType = root.sessions[root.currentIndex] ? root.sessions[root.currentIndex].type : undefined
                     root.currentIndex++
                     root.timeLeft = root.sessions[root.currentIndex].duration
+                    root.refreshEndTimeFromNow()
                     var newType = root.sessions[root.currentIndex] ? root.sessions[root.currentIndex].type : undefined
                     root.notifyBlockTransition(oldType, newType)
                 } else {
                     root.running  = false
                     root.finished = true
                     root.timeLeft = 0
+                    root.endTime  = new Date()
                 }
             }
         }
+    }
+
+    // Keep end-time moving forward while paused.
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.startTime !== null && !root.running && !root.finished
+        onTriggered: root.refreshEndTimeFromNow()
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
@@ -272,6 +283,7 @@ PlasmoidItem {
         if (blockTransitionNotification) {
             blockTransitionNotification.title = "Pomodoro Timer"
             blockTransitionNotification.text = message
+            blockTransitionNotification.iconName = "com.pomodoro.timer"
             blockTransitionNotification.sendEvent()
             return
         }
@@ -282,19 +294,37 @@ PlasmoidItem {
 
     function showDesktopNotification(message) {
         if (typeof root.showPassiveNotification === "function") {
-            root.showPassiveNotification(message, "chronometer")
+            root.showPassiveNotification(message, root.appIconPath)
             return true
         }
         if (Plasmoid && typeof Plasmoid.showPassiveNotification === "function") {
-            Plasmoid.showPassiveNotification(message, "chronometer")
+            Plasmoid.showPassiveNotification(message, root.appIconPath)
             return true
         }
         if (Plasmoid && Plasmoid.nativeInterface
             && typeof Plasmoid.nativeInterface.showPassiveNotification === "function") {
-            Plasmoid.nativeInterface.showPassiveNotification(message, "chronometer")
+            Plasmoid.nativeInterface.showPassiveNotification(message, root.appIconPath)
             return true
         }
         return false
+    }
+
+    function remainingTotalSeconds() {
+        if (sessions.length === 0 || currentIndex < 0 || currentIndex >= sessions.length)
+            return 0
+
+        var remaining = Math.max(0, timeLeft)
+        for (var i = currentIndex + 1; i < sessions.length; i++)
+            remaining += sessions[i].duration
+        return remaining
+    }
+
+    function refreshEndTimeFromNow() {
+        if (startTime === null || finished || sessions.length === 0) {
+            endTime = null
+            return
+        }
+        endTime = new Date(new Date().getTime() + remainingTotalSeconds() * 1000)
     }
 
     function applySessionSettings() {
@@ -528,8 +558,10 @@ PlasmoidItem {
                             root.startTimer()
                         } else if (root.running) {
                             root.running = false
+                            root.refreshEndTimeFromNow()
                         } else {
                             root.running = true
+                            root.refreshEndTimeFromNow()
                         }
                     }
                 }
