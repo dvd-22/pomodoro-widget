@@ -7,6 +7,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
+import org.kde.notification
 import org.kde.plasma.plasmoid
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.kirigami as Kirigami
@@ -28,6 +29,17 @@ PlasmoidItem {
     property var  endTime:           null
     // track which preset is currently loaded (-1 = none yet)
     property int  loadedPresetIndex: -1
+    property int  focusMinutes:      60
+    property int  longBreakMinutes:  15
+    property bool suppressAutoApply: false
+
+    Notification {
+        id: blockTransitionNotification
+        componentName: "plasma_workspace"
+        eventId: "notification"
+        title: "Pomodoro Timer"
+        text: ""
+    }
 
     // ── derived ────────────────────────────────────────────────────────────
     property bool currentIsWork: sessions.length > 0
@@ -45,25 +57,114 @@ PlasmoidItem {
     // ── built-in presets ───────────────────────────────────────────────────
     function builtinPresets() {
         return [
-            { name: "25+5",  sessions: buildRepeating(25, 5,  4) },
-            { name: "50+10", sessions: buildRepeating(50, 10, 3) }
+            { name: "25+5",  workMin: 25, breakMin: 5 },
+            { name: "50+10", workMin: 50, breakMin: 10 }
         ]
     }
 
-    function buildRepeating(workMin, breakMin, reps) {
-        var arr = []
-        for (var i = 0; i < reps; i++) {
-            arr.push({ type: "work",  duration: workMin  * 60 })
-            arr.push({ type: "break", duration: breakMin * 60 })
+    function normalizePreset(p) {
+        if (!p) return null
+
+        if (p.workMin !== undefined && p.breakMin !== undefined) {
+            return {
+                name: p.name ? String(p.name) : (Math.round(p.workMin) + "+" + Math.round(p.breakMin)),
+                workMin: Math.max(1, Math.round(p.workMin)),
+                breakMin: Math.max(1, Math.round(p.breakMin))
+            }
         }
-        arr.push({ type: "work", duration: workMin * 60 })
-        return arr
+
+        if (p.sessions && p.sessions.length > 0) {
+            var workMin = 25
+            var breakMin = 5
+            for (var i = 0; i < p.sessions.length; i++) {
+                if (p.sessions[i].type === "work") {
+                    workMin = Math.max(1, Math.round(p.sessions[i].duration / 60))
+                    break
+                }
+            }
+            for (var j = 0; j < p.sessions.length; j++) {
+                if (p.sessions[j].type === "break") {
+                    breakMin = Math.max(1, Math.round(p.sessions[j].duration / 60))
+                    break
+                }
+            }
+            return {
+                name: p.name ? String(p.name) : (workMin + "+" + breakMin),
+                workMin: workMin,
+                breakMin: breakMin
+            }
+        }
+
+        return null
     }
 
     function allPresets() {
+        var userRaw = []
+        try { userRaw = JSON.parse(root.presetsJson) } catch(e) {}
         var user = []
-        try { user = JSON.parse(root.presetsJson) } catch(e) {}
+        for (var i = 0; i < userRaw.length; i++) {
+            var p = normalizePreset(userRaw[i])
+            if (p) user.push(p)
+        }
         return builtinPresets().concat(user)
+    }
+
+    function suggestedLongBreakMinutes(totalMin) {
+        if (totalMin >= 240) return 30
+        if (totalMin >= 180) return 20
+        return 15
+    }
+
+    // Build alternating work/break blocks from a total duration.
+    // For sessions >= 2h, every 4th break is a long break.
+    // If remaining time can't fit a full break, fold it into the last work block.
+    function buildAlternatingByTotal(workMin, breakMin, totalMin, longBreakMin) {
+        var workSec = Math.max(1, workMin) * 60
+        var shortBreakSec = Math.max(1, breakMin) * 60
+        var longBreakSec = Math.max(1, longBreakMin) * 60
+        var remaining = Math.max(1, totalMin) * 60
+        var sessionMin = Math.max(1, totalMin)
+        var useLongBreaks = sessionMin >= 120
+        var workBlocksDone = 0
+        var arr = []
+        var adjustedTail = false
+
+        while (remaining > 0) {
+            var workDur = Math.min(workSec, remaining)
+            arr.push({ type: "work", duration: workDur })
+            workBlocksDone++
+            remaining -= workDur
+            if (remaining <= 0)
+                break
+
+            var thisBreakSec = shortBreakSec
+            if (useLongBreaks && (workBlocksDone % 4 === 0))
+                thisBreakSec = longBreakSec
+
+            if (remaining >= thisBreakSec) {
+                arr.push({ type: "break", duration: thisBreakSec })
+                remaining -= thisBreakSec
+            } else {
+                arr[arr.length - 1].duration += remaining
+                remaining = 0
+                adjustedTail = true
+            }
+        }
+
+        return { blocks: arr, adjustedTail: adjustedTail }
+    }
+
+    function sessionsForPreset(preset, totalMin) {
+        var built = buildAlternatingByTotal(preset.workMin, preset.breakMin, totalMin, longBreakMinutes)
+        return built.blocks
+    }
+
+    function loadPresetByIndex(idx) {
+        var presets = allPresets()
+        var target = idx
+        if (target < 0 || target >= presets.length) target = 0
+        var preset = presets[target]
+        loadSessions(sessionsForPreset(preset, focusMinutes), target)
     }
 
     // ── session management ─────────────────────────────────────────────────
@@ -80,12 +181,8 @@ PlasmoidItem {
     }
 
     function loadDefault() {
-        var presets = allPresets()
         var idx     = defaultPresetIndex
-        if (idx >= 0 && idx < presets.length)
-            loadSessions(presets[idx].sessions, idx)
-        else
-            loadSessions(builtinPresets()[0].sessions, 0)
+        loadPresetByIndex(idx)
     }
 
     function startTimer() {
@@ -100,9 +197,12 @@ PlasmoidItem {
 
     function skipBlock() {
         if (finished) return
+        var oldType = sessions[currentIndex] ? sessions[currentIndex].type : undefined
         if (currentIndex + 1 < sessions.length) {
             currentIndex++
             timeLeft = sessions[currentIndex].duration
+            var newType = sessions[currentIndex] ? sessions[currentIndex].type : undefined
+            notifyBlockTransition(oldType, newType)
         } else {
             running  = false
             finished = true
@@ -130,8 +230,11 @@ PlasmoidItem {
                 root.timeLeft--
             } else {
                 if (root.currentIndex + 1 < root.sessions.length) {
+                    var oldType = root.sessions[root.currentIndex] ? root.sessions[root.currentIndex].type : undefined
                     root.currentIndex++
                     root.timeLeft = root.sessions[root.currentIndex].duration
+                    var newType = root.sessions[root.currentIndex] ? root.sessions[root.currentIndex].type : undefined
+                    root.notifyBlockTransition(oldType, newType)
                 } else {
                     root.running  = false
                     root.finished = true
@@ -157,6 +260,49 @@ PlasmoidItem {
         for (var i = 0; i < idx; i++)
             x += blockWidth(sessions[i] ? sessions[i].duration : 0) + 4
         return x
+    }
+
+    function blockLabel(blockType) {
+        return blockType === "work" ? "Work" : "Break"
+    }
+
+    function notifyBlockTransition(fromType, toType) {
+        if (fromType === undefined || toType === undefined || fromType === toType)
+            return
+
+        var message = blockLabel(fromType) + " finished. " + blockLabel(toType) + " started."
+        if (blockTransitionNotification) {
+            blockTransitionNotification.title = "Pomodoro Timer"
+            blockTransitionNotification.text = message
+            blockTransitionNotification.sendEvent()
+            return
+        }
+
+        if (!showDesktopNotification(message))
+            console.warn("Pomodoro notification API not available")
+    }
+
+    function showDesktopNotification(message) {
+        if (typeof root.showPassiveNotification === "function") {
+            root.showPassiveNotification(message, "chronometer")
+            return true
+        }
+        if (Plasmoid && typeof Plasmoid.showPassiveNotification === "function") {
+            Plasmoid.showPassiveNotification(message, "chronometer")
+            return true
+        }
+        if (Plasmoid && Plasmoid.nativeInterface
+            && typeof Plasmoid.nativeInterface.showPassiveNotification === "function") {
+            Plasmoid.nativeInterface.showPassiveNotification(message, "chronometer")
+            return true
+        }
+        return false
+    }
+
+    function applySessionSettings() {
+        if (suppressAutoApply)
+            return
+        loadPresetByIndex(loadedPresetIndex)
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -402,6 +548,95 @@ PlasmoidItem {
                 }
             }
 
+            // ── focus duration for selected preset ───────────────────────
+            Column {
+                width: parent.width
+                spacing: 6
+
+                Text {
+                    text: "Amount of time to concentrate (minutes)"
+                    font.pixelSize: 11
+                    color: Kirigami.Theme.disabledTextColor
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+
+                Row {
+                    spacing: 8
+                    anchors.horizontalCenter: parent.horizontalCenter
+
+                    Text {
+                        text: "Focus:"
+                        color: Kirigami.Theme.textColor
+                        height: 32
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    QQC2.SpinBox {
+                        id: focusMinutesInput
+                        from: 1
+                        to: 1440
+                        value: root.focusMinutes
+                        implicitWidth: 86
+                        onValueModified: {
+                            root.suppressAutoApply = true
+                            root.focusMinutes = value
+                            root.longBreakMinutes = root.suggestedLongBreakMinutes(value)
+                            longBreakInput.value = root.longBreakMinutes
+                            root.suppressAutoApply = false
+                            root.applySessionSettings()
+                        }
+                    }
+
+                    Text {
+                        text: "min"
+                        color: Kirigami.Theme.textColor
+                        height: 32
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                Row {
+                    spacing: 8
+                    anchors.horizontalCenter: parent.horizontalCenter
+
+                    Text {
+                        text: "Long break:"
+                        color: Kirigami.Theme.textColor
+                        height: 32
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    QQC2.SpinBox {
+                        id: longBreakInput
+                        from: 1
+                        to: 120
+                        value: root.longBreakMinutes
+                        implicitWidth: 86
+                        onValueModified: {
+                            root.longBreakMinutes = value
+                            root.applySessionSettings()
+                        }
+                    }
+
+                    Text {
+                        text: "min"
+                        color: Kirigami.Theme.textColor
+                        height: 32
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    text: "Used every 4th break for sessions of 2 hours or more."
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    color: Kirigami.Theme.disabledTextColor
+                    font.pixelSize: 10
+                }
+
+            }
+
             // ── preset selector + add button ──────────────────────────────
             Flow {
                 width: parent.width; spacing: 6
@@ -421,7 +656,7 @@ PlasmoidItem {
                         text:        myPreset ? myPreset.name : ""
                         highlighted: myIndex === root.loadedPresetIndex
                         onClicked: {
-                            root.loadSessions(myPreset.sessions, myIndex)
+                            root.loadSessions(root.sessionsForPreset(myPreset, root.focusMinutes), myIndex)
                         }
                     }
                 }

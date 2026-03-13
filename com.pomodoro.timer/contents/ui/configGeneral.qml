@@ -23,11 +23,54 @@ Item {
 
     // ── internal ────────────────────────────────────────────────────────────
     property var userPresets: []
-    property var draftBlocks: []
+
+    function normalizePreset(p) {
+        if (!p) return null
+
+        if (p.workMin !== undefined && p.breakMin !== undefined) {
+            return {
+                name: p.name ? String(p.name) : (Math.round(p.workMin) + "+" + Math.round(p.breakMin)),
+                workMin: Math.max(1, Math.round(p.workMin)),
+                breakMin: Math.max(1, Math.round(p.breakMin))
+            }
+        }
+
+        if (p.sessions && p.sessions.length > 0) {
+            var workMin = 25
+            var breakMin = 5
+            for (var i = 0; i < p.sessions.length; i++) {
+                if (p.sessions[i].type === "work") {
+                    workMin = Math.max(1, Math.round(p.sessions[i].duration / 60))
+                    break
+                }
+            }
+            for (var j = 0; j < p.sessions.length; j++) {
+                if (p.sessions[j].type === "break") {
+                    breakMin = Math.max(1, Math.round(p.sessions[j].duration / 60))
+                    break
+                }
+            }
+            return {
+                name: p.name ? String(p.name) : (workMin + "+" + breakMin),
+                workMin: workMin,
+                breakMin: breakMin
+            }
+        }
+
+        return null
+    }
 
     function parsePresets() {
-        try { userPresets = JSON.parse(presetsJsonBacking.text) }
-        catch(e) { userPresets = [] }
+        var parsed = []
+        try { parsed = JSON.parse(presetsJsonBacking.text) }
+        catch(e) { parsed = [] }
+
+        var normalized = []
+        for (var i = 0; i < parsed.length; i++) {
+            var p = normalizePreset(parsed[i])
+            if (p) normalized.push(p)
+        }
+        userPresets = normalized
         userModel.rebuild()
         defaultCombo.refreshModel()
     }
@@ -43,12 +86,6 @@ Item {
         var n = builtinNames.slice()
         for (var i = 0; i < userPresets.length; i++) n.push(userPresets[i].name)
         return n
-    }
-
-    function draftTotal() {
-        var t = 0
-        for (var i = 0; i < draftBlocks.length; i++) t += draftBlocks[i].duration
-        return Math.round(t / 60)
     }
 
     Component.onCompleted:              parsePresets()
@@ -105,7 +142,7 @@ Item {
                     clear()
                     for (var i = 0; i < cfgRoot.userPresets.length; i++) {
                         var p = cfgRoot.userPresets[i]
-                        append({ pname: p.name, pblocks: p.sessions ? p.sessions.length : 0 })
+                        append({ pname: p.name, pwork: p.workMin, pbreak: p.breakMin })
                     }
                 }
             }
@@ -117,7 +154,7 @@ Item {
                     property int myIdx: index
                     Rectangle { width: 8; height: 8; radius: 4; color: "#44aaff"; Layout.alignment: Qt.AlignVCenter }
                     QQC2.Label { text: model.pname; Layout.fillWidth: true }
-                    QQC2.Label { text: model.pblocks + " blocks"; font.pixelSize: 10; opacity: 0.5 }
+                    QQC2.Label { text: model.pwork + "m work / " + model.pbreak + "m break"; font.pixelSize: 10; opacity: 0.5 }
                     QQC2.Button {
                         text: "Delete"
                         onClicked: {
@@ -143,100 +180,27 @@ Item {
                 QQC2.TextField { id: presetName; Layout.fillWidth: true; placeholderText: "e.g. Deep Work 90/15" }
             }
 
-            Kirigami.Heading { text: "Quick fill"; level: 4; opacity: 0.65 }
             RowLayout {
                 Layout.fillWidth: true; spacing: 6
-                QQC2.SpinBox { id: qfReps;  from: 1; to: 20;  value: 4;  implicitWidth: 64 }
-                QQC2.Label   { text: "×"; Layout.alignment: Qt.AlignVCenter }
                 QQC2.SpinBox { id: qfWork;  from: 1; to: 240; value: 25; implicitWidth: 72 }
-                QQC2.Label   { text: "m work"; Layout.alignment: Qt.AlignVCenter }
+                QQC2.Label   { text: "work mins"; Layout.alignment: Qt.AlignVCenter }
                 QQC2.SpinBox { id: qfBreak; from: 1; to: 120; value: 5;  implicitWidth: 72 }
-                QQC2.Label   { text: "m break"; Layout.alignment: Qt.AlignVCenter }
-                QQC2.Button {
-                    text: "Fill"
-                    onClicked: {
-                        var arr = []
-                        for (var i = 0; i < qfReps.value; i++) {
-                            arr.push({ type: "work",  duration: qfWork.value  * 60 })
-                            arr.push({ type: "break", duration: qfBreak.value * 60 })
-                        }
-                        arr.push({ type: "work", duration: qfWork.value * 60 })
-                        cfgRoot.draftBlocks = arr
-                        draftModel.rebuild()
-                    }
-                }
-            }
-
-            Kirigami.Heading { text: "Or add blocks manually"; level: 4; opacity: 0.65 }
-            RowLayout {
-                Layout.fillWidth: true; spacing: 6
-                QQC2.ComboBox { id: blkType; model: ["Work", "Break"]; implicitWidth: 90 }
-                QQC2.SpinBox  { id: blkMin; from: 1; to: 240; value: 25; implicitWidth: 72 }
-                QQC2.Label    { text: "min"; Layout.alignment: Qt.AlignVCenter }
-                QQC2.Button {
-                    text: "+ Add"
-                    onClicked: {
-                        var arr = cfgRoot.draftBlocks.slice()
-                        arr.push({ type: blkType.currentIndex === 0 ? "work" : "break",
-                                   duration: blkMin.value * 60 })
-                        cfgRoot.draftBlocks = arr
-                        draftModel.rebuild()
-                        // do NOT reset blkType so user can add another of same type
-                    }
-                }
-                QQC2.Button {
-                    text: "Clear all"
-                    onClicked: { cfgRoot.draftBlocks = []; draftModel.clear() }
-                }
-            }
-
-            QQC2.Label {
-                visible: cfgRoot.draftBlocks.length > 0
-                text:    cfgRoot.draftBlocks.length + " blocks · " + cfgRoot.draftTotal() + " min total"
-                font.pixelSize: 11; opacity: 0.75
-            }
-
-            ListModel {
-                id: draftModel
-                function rebuild() {
-                    clear()
-                    for (var i = 0; i < cfgRoot.draftBlocks.length; i++) {
-                        var b = cfgRoot.draftBlocks[i]
-                        append({ btype: b.type, bmins: Math.round(b.duration / 60) })
-                    }
-                }
-            }
-
-            Repeater {
-                model: draftModel
-                delegate: RowLayout {
-                    Layout.fillWidth: true; spacing: 8
-                    property int myIdx: index
-                    Rectangle { width: 10; height: 10; radius: 3; color: model.btype === "work" ? "#ff6644" : "#44cc88"; Layout.alignment: Qt.AlignVCenter }
-                    QQC2.Label { text: (model.btype === "work" ? "Work" : "Break") + "  —  " + model.bmins + " min"; Layout.fillWidth: true }
-                    QQC2.Button {
-                        text: "✕"; implicitWidth: 28
-                        onClicked: {
-                            var arr = cfgRoot.draftBlocks.slice()
-                            arr.splice(myIdx, 1)
-                            cfgRoot.draftBlocks = arr
-                            draftModel.rebuild()
-                        }
-                    }
-                }
+                QQC2.Label   { text: "break mins"; Layout.alignment: Qt.AlignVCenter }
             }
 
             QQC2.Button {
-                text: "💾  Save preset"
-                enabled: presetName.text.trim().length > 0 && cfgRoot.draftBlocks.length > 0
+                text: "Save preset"
+                enabled: presetName.text.trim().length > 0
                 onClicked: {
                     var arr = cfgRoot.userPresets.slice()
-                    arr.push({ name: presetName.text.trim(), sessions: cfgRoot.draftBlocks.slice() })
+                    arr.push({
+                        name: presetName.text.trim(),
+                        workMin: qfWork.value,
+                        breakMin: qfBreak.value
+                    })
                     cfgRoot.userPresets = arr
                     cfgRoot.savePresets()
-                    presetName.text     = ""
-                    cfgRoot.draftBlocks = []
-                    draftModel.clear()
+                    presetName.text = ""
                 }
             }
 
